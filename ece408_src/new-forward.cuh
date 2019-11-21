@@ -80,7 +80,7 @@ __global__ void unroll_input(float *x_unroll, const float *x, const int b,
 #undef x_unroll4d
 }
 
-__global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unroll, float *y, const int b,
+__global__ void forward_kernel(const float *k_unroll, const float *x_unroll, float *y, const int b,
     const int B, const int M, const int C, const int H, const int W, const int K) {
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
     __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
@@ -126,7 +126,7 @@ __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unrol
 
 
 #ifdef CONSTANT
-__global__ void constant_kernel(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
+__global__ void forward_kernel(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
@@ -154,11 +154,11 @@ __global__ void constant_kernel(float *y, const float *x, const int B, const int
 #undef x4d
 #undef k4d
 }
-#endif
+#endif /* #ifdef CONSTANT */
 
 
 #ifdef SHARED
-__global__ void shared_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
+__global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
     __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
@@ -236,7 +236,16 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
     dim3 gridDim(B, M, Z);
 
-    /* ------------------------- Unroll ------------------------- */
+#ifdef CONSTANT
+    cudaMemcpyToSymbol(deviceKernel, w.dptr_, M * C * K * K * sizeof(float));
+#endif
+
+    /* --------------------------- RUN KERNEL ------------------------------ */
+
+#ifdef ORIGINAL
+    forward_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
+#endif /* #ifdef ORIGINAL */
+
 #ifdef UNROLL
     float *x_unroll;
     cudaMalloc((void **)&x_unroll, H_out*W_out*K*K*C*sizeof(float));
@@ -250,30 +259,22 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // Call the kernel
     for (int b = 0; b < B; b++) {
         unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, b, B, M, C, H, W, K);
-        matrixMultiplyShared<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b, B, M, C, H, W, K);
+        forward_kernel<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b, B, M, C, H, W, K);
     }
 #endif /* #ifdef UNROLL  */
-
-
-#ifdef ORIGINAL
-    forward_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
-#endif /* #ifdef ORIGINAL */
-
-#ifdef CONSTANT
-    cudaMemcpyToSymbol(deviceKernel, w.dptr_, M * C * K * K * sizeof(float));
-#endif
 
 #ifdef SHARED
     /* ----------------------- SHARED --------------------- */
     int blockWidth = TILE_WIDTH + K - 1;
     dim3 blockDim_s(blockWidth, blockWidth, 1);
     dim3 gridDim_s(B, M, Z);
-    shared_kernel<<<gridDim_s, blockDim_s, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B,M,C,H,W,K);
+    forward_kernel<<<gridDim_s, blockDim_s, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B,M,C,H,W,K);
+#else 
+#ifdef CONSTANT
+    forward_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_, x.dptr_, B,M,C,H,W,K);
+#endif /* #ifdef CONSTANT */
 #endif /* #ifdef SHARED */
 
-#ifdef CONSTANT
-    constant_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_, x.dptr_, B,M,C,H,W,K);
-#endif /* #ifdef CONSTANT */
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
