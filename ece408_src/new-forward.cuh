@@ -12,6 +12,7 @@
 // #define ORIGINAL
 // #define UNROLL
 #define CONSTANT
+// #define SHARED
 
 namespace mxnet
 {
@@ -19,9 +20,10 @@ namespace op
 {
 
 #ifdef CONSTANT    
-__constant__ float deviceKernel[10000];
+__constant__ float deviceKernel[5000];
 #endif
 
+#ifdef ORIGINAL
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K) {
     /*
     Modify this function to implement the forward pass described in Chapter 16.
@@ -58,6 +60,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 #undef x4d
 #undef k4d
 }
+#endif
 
 
 #ifdef UNROLL
@@ -177,6 +180,56 @@ __global__ void constant_kernel(float *y, const float *x, const int B, const int
 #endif
 
 
+#ifdef SHARED
+__global__ void shared_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
+{
+
+    __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
+    // const int H_out = H - K + 1;
+    // const int W_out = W - K + 1;
+    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
+    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
+
+
+#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
+#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+#ifdef CONSTANT
+#define k4d(i3, i2, i1, i0) deviceKernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+#else
+#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+#endif
+    
+    int n, m, h, w, c, p, q;
+    n = blockIdx.x;
+    m = blockIdx.y;
+    h = (blockIdx.z / W_grid) * TILE_WIDTH + threadIdx.y;
+    w = (blockIdx.z % W_grid) * TILE_WIDTH + threadIdx.x;
+
+    for (c = 0; c < C; ++c) {
+        if (h < H && w < W) {
+            X_ds[c][threadIdx.y][threadIdx.x] = x4d(n, c, h, w);
+        } else {
+            X_ds[c][threadIdx.y][threadIdx.x] = 0.0f;
+        }
+    }
+
+    __syncthreads();
+
+    if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH) {
+        float acc = 0;
+        for (c = 0; c < C; c++)
+            for (p = 0; p < K; ++p)
+                for (q = 0; q < K; ++q)
+                    acc += X_ds[c][h + p][w + q] * k4d(m, c, p, q);
+        y4d(n, m, h, w) = acc;
+    }
+
+#undef y4d
+#undef x4d
+#undef k4d
+}
+#endif // #ifdef SHARED
+
 /* 
    This function is called by new-inl.h
    Any code you write should be executed by this function.
@@ -198,7 +251,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int H = x.shape_[2];
     const int W = x.shape_[3];
     const int K = w.shape_[3];
-    // printf("B = %d, M = %d, C = %d, H = %d, W = %d, K = %d\n", B, M, C, H, W, K);
+    printf("B = %d, M = %d, C = %d, H = %d, W = %d, K = %d\n", B, M, C, H, W, K);
     cudaStream_t s = 0;
 
     /* ------------------------- Original ------------------------ */
@@ -239,13 +292,22 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     forward_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 #endif /* #ifdef ORIGINAL */
 
-
 #ifdef CONSTANT
-    /* ----------------------- SHARED --------------------- */
     cudaMemcpyToSymbol(deviceKernel, w.dptr_, M * C * K * K * sizeof(float));
+#endif
 
+#ifdef SHARED
+    /* ----------------------- SHARED --------------------- */
+    int blockWidth = TILE_WIDTH + K - 1;
+    dim3 blockDim_s(blockWidth, blockWidth, 1);
+    dim3 gridDim_s(B, M, Z);
+    shared_kernel<<<gridDim_s, blockDim_s, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B,M,C,H,W,K);
+#else
+#ifdef CONSTANT
     constant_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_, x.dptr_, B,M,C,H,W,K);
 #endif /* #ifdef CONSTANT */
+#endif /* #ifdef SHARED */
+
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
