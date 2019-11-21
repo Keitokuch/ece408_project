@@ -4,15 +4,15 @@
 
 #include <mxnet/base.h>
 
-#define TILE 16
+#define TILE 4
 #define H_out (H - K + 1)
 #define W_out (W - K + 1)
 #define TILE_WIDTH 16
 
 // #define ORIGINAL
-// #define UNROLL
-#define CONSTANT
-#define SHARED
+#define UNROLL
+// #define CONSTANT
+// #define SHARED
 
 namespace mxnet
 {
@@ -31,8 +31,6 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     The goal here is to be correct AND fast.
     We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
     */
-    // const int H_out = H - K + 1;
-    // const int W_out = W - K + 1;
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
     int W_grid = ceil(1.0*W_out / TILE_WIDTH);
 
@@ -64,45 +62,26 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
 
 #ifdef UNROLL
-__global__ void unroll_input(float *x_unroll, const float *x,
+__global__ void unroll_input(float *x_unroll, const float *x, const int b,
     const int B, const int M, const int C, const int H, const int W, const int K) {
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define x_unroll4d(i2, i1, i0) x_unroll[(i2) * (H_out * W_out * K * K * C) + (i1) * (H_out * W_out) + i0]
+#define x_unroll4d(i1, i0) x_unroll[(i1) * (H_out * W_out) + i0]
 
     int w_unroll = blockIdx.x * blockDim.x + threadIdx.x;
     int h_unroll = blockIdx.y * blockDim.y + threadIdx.y;
-    int b = blockIdx.z;
     int c = blockIdx.y;
     int h = w_unroll / W_out;
     int w = w_unroll % W_out;
     int p = threadIdx.y / K;
     int q = threadIdx.y % K;
-    if (b < B && c < C && h + p < H && w + q < W)
-        x_unroll4d(b, h_unroll, w_unroll) = x4d(b, c, h + p, w + q);
+    if (c < C && h < H && w < W && p < K && q < K)
+        x_unroll4d(h_unroll, w_unroll) = x4d(b, c, h + p, w + q);
 
 #undef x4d
 #undef x_unroll4d
 }
 
-__global__ void unroll_kernel(float *k_unroll, const float *k,
-    const int B, const int M, const int C, const int H, const int W, const int K) {
-#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-#define k_unroll4d(i1, i0) k_unroll[(i1) * (C * K * K) + i0]
-
-    int w_unroll = blockIdx.x * blockDim.x + threadIdx.x;
-    int h_unroll = blockIdx.y * blockDim.y + threadIdx.y;
-    int m = h_unroll;
-    int c = blockIdx.x;
-    int p = threadIdx.x / K;
-    int q = threadIdx.x % K;
-    if (m < M && c < C && p < K && q < K)
-        k_unroll4d(h_unroll, w_unroll) = k4d(m, c, p, q);
-
-#undef k4d
-#undef k_unroll4d
-}
-
-__global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unroll, float *y,
+__global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unroll, float *y, const int b,
     const int B, const int M, const int C, const int H, const int W, const int K) {
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
     __shared__ float subTileM[TILE][TILE];
@@ -120,7 +99,6 @@ __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unrol
     int Row = by * TILE + ty;
     int Col = bx * TILE + tx;
 
-    int b = blockIdx.z;
     int m = Row;
     int h = Col / W_out;
     int w = Col % W_out;
@@ -129,15 +107,18 @@ __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unrol
     for (int i = 0; i < ceil(numAColumns/float(TILE)); i++) {
         if (Row < numARows && (i*TILE+tx) < numAColumns)
             subTileM[ty][tx] = k_unroll[Row*numAColumns+i*TILE+tx];
-        if (b < B && (i*TILE+ty) < numBRows && Col < numBColumns)
-            subTileN[ty][tx] = x_unroll[b*numBRows*numBColumns+(i*TILE+ty)*numBColumns+Col];
+        else
+            subTileM[ty][tx] = 0;
+        if ((i*TILE+ty) < numBRows && Col < numBColumns)
+            subTileN[ty][tx] = x_unroll[(i*TILE+ty)*numBColumns+Col];
+        else
+            subTileN[ty][tx] = 0;
         __syncthreads();
         for (int k = 0; k < TILE; k++)
-            if ((i*TILE+k) < numAColumns)
-                Pvalue += subTileM[ty][k] * subTileN[k][tx];
+            Pvalue += subTileM[ty][k] * subTileN[k][tx];
         __syncthreads();
     }
-    if (b < B && Row < numCRows && Col < numCColumns)
+    if (Row < numCRows && Col < numCColumns)
         y4d(b, m, h, w) = Pvalue;
 
 #undef y4d
@@ -149,11 +130,8 @@ __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unrol
 __global__ void constant_kernel(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
-    // const int H_out = H - K + 1;
-    // const int W_out = W - K + 1;
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
     int W_grid = ceil(1.0*W_out / TILE_WIDTH);
-
 
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
@@ -185,8 +163,6 @@ __global__ void shared_kernel(float *y, const float *x, const float *k, const in
 {
 
     __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
-    // const int H_out = H - K + 1;
-    // const int W_out = W - K + 1;
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
     int W_grid = ceil(1.0*W_out / TILE_WIDTH);
 
@@ -255,8 +231,6 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     cudaStream_t s = 0;
 
     /* ------------------------- Original ------------------------ */
-    // int H_out = H - K + 1;
-    // int W_out = W - K + 1;
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
     int W_grid = ceil(1.0*W_out / TILE_WIDTH);
     int Z = H_grid * W_grid;
@@ -266,25 +240,19 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     /* ------------------------- Unroll ------------------------- */
 #ifdef UNROLL 
     float *x_unroll;
-    float *k_unroll;
-    cudaMalloc((void **)&x_unroll, sizeof(float)*H_out*W_out*K*K*C);
-    cudaMalloc((void **)&k_unroll, sizeof(float)*M*K*K*C);
+    cudaMalloc((void **)&x_unroll, H_out*W_out*K*K*C*sizeof(float));
 
     // Set the kernel dimensions
-    dim3 gridDim_1(ceil(H_out*W_out/float(K*K)), C, B);
+    dim3 gridDim_1(ceil(H_out*W_out/float(K*K)), C, 1);
     dim3 blockDim_1(K*K, K*K, 1);
-    dim3 gridDim_2(C, ceil(M/float(K*K)), 1);
-    dim3 blockDim_2(K*K, K*K, 1);
-    dim3 gridDim_3(ceil(M/float(TILE)), ceil(H_out*W_out/float(TILE)), B);
-    dim3 blockDim_3(TILE, TILE, 1);
+    dim3 gridDim_2(ceil(H_out*W_out/float(TILE)), ceil(M/float(TILE)), 1);
+    dim3 blockDim_2(TILE, TILE, 1);
 
-    unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, B, M, C, H, W, K);
-    cudaDeviceSynchronize();
-    unroll_kernel<<<gridDim_2, blockDim_2>>>(k_unroll, w.dptr_, B, M, C, H, W, K);
-    cudaDeviceSynchronize();
-    matrixMultiplyShared<<<gridDim_3, blockDim_3>>>(k_unroll, x_unroll, y.dptr_, B, M, C, H, W, K);
     // Call the kernel
-    // unroll_input<<<gridDim_1, blockDim_1, 0, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
+    for (int b = 0; b < B; b++) {
+        unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, b, B, M, C, H, W, K);
+        matrixMultiplyShared<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b, B, M, C, H, W, K);
+    }
 #endif /* #ifdef UNROLL  */
 
 
@@ -308,13 +276,11 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 #endif /* #ifdef CONSTANT */
 #endif /* #ifdef SHARED */
 
-
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 
 #ifdef UNROLL
     cudaFree(x_unroll);
-    cudaFree(k_unroll);
 #endif
 }
 
