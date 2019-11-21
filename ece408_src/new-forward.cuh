@@ -18,7 +18,7 @@ namespace mxnet
 namespace op
 {
 
-#ifdef CONSTANT    
+#ifdef CONSTANT
 __constant__ float deviceKernel[10000];
 #endif
 
@@ -122,7 +122,7 @@ __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unrol
 
 #undef y4d
 }
-#endif // #ifdef UNROLL 
+#endif // #ifdef UNROLL
 
 
 #ifdef CONSTANT
@@ -135,7 +135,7 @@ __global__ void constant_kernel(float *y, const float *x, const int B, const int
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 #define k4d(i3, i2, i1, i0) deviceKernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-    
+
     int n, m, h, w, c, p, q;
     n = blockIdx.x;
     m = blockIdx.y;
@@ -173,7 +173,7 @@ __global__ void shared_kernel(float *y, const float *x, const float *k, const in
 #else
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 #endif
-    
+
     int n, m, h, w, c, p, q;
     n = blockIdx.x;
     m = blockIdx.y;
@@ -205,7 +205,7 @@ __global__ void shared_kernel(float *y, const float *x, const float *k, const in
 }
 #endif // #ifdef SHARED
 
-/* 
+/*
    This function is called by new-inl.h
    Any code you write should be executed by this function.
    For ECE408, we only expect the float version of the operator to be called, so here we specialize with only floats.
@@ -237,7 +237,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 gridDim(B, M, Z);
 
     /* ------------------------- Unroll ------------------------- */
-#ifdef UNROLL 
+#ifdef UNROLL
     float *x_unroll;
     cudaMalloc((void **)&x_unroll, H_out*W_out*K*K*C*sizeof(float));
 
@@ -283,7 +283,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 #endif
 }
 
-/* 
+/*
     This tells mxnet how to do an op when it's not a float.
     This is not used in the ECE408 project
 */
