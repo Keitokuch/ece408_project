@@ -12,7 +12,7 @@
 // #define ORIGINAL
 // #define UNROLL
 #define CONSTANT
-// #define SHARED
+#define SHARED
 
 namespace mxnet
 {
@@ -20,7 +20,7 @@ namespace op
 {
 
 #ifdef CONSTANT    
-__constant__ float deviceKernel[5000];
+__constant__ float deviceKernel[10000];
 #endif
 
 #ifdef ORIGINAL
@@ -215,12 +215,12 @@ __global__ void shared_kernel(float *y, const float *x, const float *k, const in
 
     __syncthreads();
 
-    if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH) {
+    if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH && h < H_out && w < W_out) {
         float acc = 0;
         for (c = 0; c < C; c++)
             for (p = 0; p < K; ++p)
                 for (q = 0; q < K; ++q)
-                    acc += X_ds[c][h + p][w + q] * k4d(m, c, p, q);
+                    acc += X_ds[c][threadIdx.y + p][threadIdx.x + q] * k4d(m, c, p, q);
         y4d(n, m, h, w) = acc;
     }
 
@@ -251,7 +251,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int H = x.shape_[2];
     const int W = x.shape_[3];
     const int K = w.shape_[3];
-    printf("B = %d, M = %d, C = %d, H = %d, W = %d, K = %d\n", B, M, C, H, W, K);
+    /* printf("B = %d, M = %d, C = %d, H = %d, W = %d, K = %d\n", B, M, C, H, W, K); */
     cudaStream_t s = 0;
 
     /* ------------------------- Original ------------------------ */
