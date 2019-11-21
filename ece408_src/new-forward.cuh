@@ -4,14 +4,13 @@
 
 #include <mxnet/base.h>
 
-#define TILE 4
+#define TILE_WIDTH 16
 #define H_out (H - K + 1)
 #define W_out (W - K + 1)
-#define TILE_WIDTH 16
 
 // #define ORIGINAL
-#define UNROLL
-// #define CONSTANT
+// #define UNROLL
+#define CONSTANT
 // #define SHARED
 
 namespace mxnet
@@ -38,10 +37,10 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 
-    int b = blockIdx.z;
-    int m = blockIdx.x;
-    int h = blockIdx.y / W_grid * TILE + threadIdx.y;
-    int w = blockIdx.y % W_grid * TILE + threadIdx.x;
+    int b = blockIdx.x;
+    int m = blockIdx.y;
+    int h = blockIdx.z / W_grid * TILE_WIDTH + threadIdx.y;
+    int w = blockIdx.z % W_grid * TILE_WIDTH + threadIdx.x;
     float acc = 0;
     if (h < H_out && w < W_out) {
         for (int c = 0; c < C; c++) {
@@ -74,7 +73,7 @@ __global__ void unroll_input(float *x_unroll, const float *x, const int b,
     int w = w_unroll % W_out;
     int p = threadIdx.y / K;
     int q = threadIdx.y % K;
-    if (c < C && h < H && w < W && p < K && q < K)
+    if (c < C && w_unroll < W_out * H_out && threadIdx.y < K * K)
         x_unroll4d(h_unroll, w_unroll) = x4d(b, c, h + p, w + q);
 
 #undef x4d
@@ -84,8 +83,8 @@ __global__ void unroll_input(float *x_unroll, const float *x, const int b,
 __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unroll, float *y, const int b,
     const int B, const int M, const int C, const int H, const int W, const int K) {
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-    __shared__ float subTileM[TILE][TILE];
-    __shared__ float subTileN[TILE][TILE];
+    __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
 
     int numARows = M;
     int numAColumns = C * K * K;
@@ -96,25 +95,25 @@ __global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unrol
 
     int bx = blockIdx.x, by = blockIdx.y;
     int tx = threadIdx.x, ty = threadIdx.y;
-    int Row = by * TILE + ty;
-    int Col = bx * TILE + tx;
+    int Row = by * TILE_WIDTH + ty;
+    int Col = bx * TILE_WIDTH + tx;
 
     int m = Row;
     int h = Col / W_out;
     int w = Col % W_out;
 
     float Pvalue = 0;
-    for (int i = 0; i < ceil(numAColumns/float(TILE)); i++) {
-        if (Row < numARows && (i*TILE+tx) < numAColumns)
-            subTileM[ty][tx] = k_unroll[Row*numAColumns+i*TILE+tx];
+    for (int i = 0; i < ceil(numAColumns/float(TILE_WIDTH)); i++) {
+        if (Row < numARows && (i*TILE_WIDTH+tx) < numAColumns)
+            subTileM[ty][tx] = k_unroll[Row*numAColumns+i*TILE_WIDTH+tx];
         else
             subTileM[ty][tx] = 0;
-        if ((i*TILE+ty) < numBRows && Col < numBColumns)
-            subTileN[ty][tx] = x_unroll[(i*TILE+ty)*numBColumns+Col];
+        if ((i*TILE_WIDTH+ty) < numBRows && Col < numBColumns)
+            subTileN[ty][tx] = x_unroll[(i*TILE_WIDTH+ty)*numBColumns+Col];
         else
             subTileN[ty][tx] = 0;
         __syncthreads();
-        for (int k = 0; k < TILE; k++)
+        for (int k = 0; k < TILE_WIDTH; k++)
             Pvalue += subTileM[ty][k] * subTileN[k][tx];
         __syncthreads();
     }
@@ -245,8 +244,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // Set the kernel dimensions
     dim3 gridDim_1(ceil(H_out*W_out/float(K*K)), C, 1);
     dim3 blockDim_1(K*K, K*K, 1);
-    dim3 gridDim_2(ceil(H_out*W_out/float(TILE)), ceil(M/float(TILE)), 1);
-    dim3 blockDim_2(TILE, TILE, 1);
+    dim3 gridDim_2(ceil(H_out*W_out/float(TILE_WIDTH)), ceil(M/float(TILE_WIDTH)), 1);
+    dim3 blockDim_2(TILE_WIDTH, TILE_WIDTH, 1);
 
     // Call the kernel
     for (int b = 0; b < B; b++) {
@@ -270,11 +269,11 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 blockDim_s(blockWidth, blockWidth, 1);
     dim3 gridDim_s(B, M, Z);
     shared_kernel<<<gridDim_s, blockDim_s, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B,M,C,H,W,K);
-#else
+#endif /* #ifdef SHARED */
+
 #ifdef CONSTANT
     constant_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_, x.dptr_, B,M,C,H,W,K);
 #endif /* #ifdef CONSTANT */
-#endif /* #ifdef SHARED */
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
