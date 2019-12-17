@@ -5,15 +5,14 @@
 #include <mma.h>
 using namespace nvcuda;
 
-#define TILE_WIDTH 16
-#define TILE_WIDTH2 24
-#define TILE_WIDTH_MATRIX 16 //16 is faster
-#define TILE_WIDTH_MATRIX2 24
+#define TILE_WIDTH 16           /* Tile width for Shared memory convolution */
+#define TILE_WIDTH_MATRIX 16    /* First layer of unroll_inplicit */
+#define TILE_WIDTH_MATRIX2 24   /* Second layer of unroll_inplicit */
 #define H_out (H - K + 1)
 #define W_out (W - K + 1)
-#define HALO_WIDTH (TILE_WIDTH + 4)
+#define HALO_WIDTH (TILE_WIDTH + 4)  /* Block size for Impl2 convolution tile loading */
 #define CUDA_MAX_NUM_THREADS 1024
-#define BATCH_SIZE 1000
+#define BATCH_SIZE 1000         /* batch size for unroll_explicit */
 
 // #define ORIGINAL
 // #define UNROLL
@@ -30,7 +29,7 @@ namespace op
 {
 
 #ifdef CONSTANT
-__constant__ float deviceKernel[10000];
+__constant__ float deviceKernel[10000];     // Enough for largest kernel C*M*K*K=12*24*5*5=7200 floats
 #endif
 
 #ifdef ORIGINAL
@@ -218,7 +217,6 @@ __global__ void forward_kernel(const float *k_unroll, const float *x_unroll, flo
 __global__ void forward_kernel(float *  y, const float *  x, const float *  k, const int B, const int M, const int C, const int H, const int W, const int K) {
 // __global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K) {
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 
 #undef TILE_WIDTH
@@ -253,7 +251,6 @@ __global__ void forward_kernel(float *  y, const float *  x, const float *  k, c
         else
             subTileM[ty][tx] = 0;
 
-        // int X_b = b;
         int X_c = temp_row / (K * K);
         int X_p = temp_row % (K * K) / K;
         int X_q = (temp_row % (K * K)) % K;
@@ -276,17 +273,18 @@ __global__ void forward_kernel(float *  y, const float *  x, const float *  k, c
 #undef y4d
 #undef x4d
 }
+
+
 __global__ void forward_kernel2(float *  y, const float *  x, const float *  k, const int B, const int M, const int C, const int H, const int W, const int K) {
-// __global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K) {
+// __global__ void forward_kernel2(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K) {
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 
-#undef TILE_WIDTH2
-#define TILE_WIDTH2 TILE_WIDTH_MATRIX2
+#undef TILE_WIDTH
+#define TILE_WIDTH TILE_WIDTH_MATRIX2
 
-    __shared__ float subTileM[TILE_WIDTH2][TILE_WIDTH2];
-    __shared__ float subTileN[TILE_WIDTH2][TILE_WIDTH2];
+    __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
 
     int numARows = M;
     int numAColumns = C * K * K;
@@ -297,8 +295,8 @@ __global__ void forward_kernel2(float *  y, const float *  x, const float *  k, 
 
     int bx = blockIdx.x, by = blockIdx.y;
     int tx = threadIdx.x, ty = threadIdx.y;
-    int Row = by * TILE_WIDTH2 + ty;
-    int Col = bx * TILE_WIDTH2 + tx;
+    int Row = by * TILE_WIDTH + ty;
+    int Col = bx * TILE_WIDTH + tx;
 
     int b = blockIdx.z;
     int m = Row;
@@ -307,14 +305,13 @@ __global__ void forward_kernel2(float *  y, const float *  x, const float *  k, 
 
     float Pvalue = 0;
     // #pragma unroll
-    for (int i = 0; i < ceil(numAColumns/float(TILE_WIDTH2)); i++) {
-        int temp_col = i * TILE_WIDTH2 + tx, temp_row = i * TILE_WIDTH2 + ty;
+    for (int i = 0; i < ceil(numAColumns/float(TILE_WIDTH)); i++) {
+        int temp_col = i * TILE_WIDTH + tx, temp_row = i * TILE_WIDTH + ty;
         if (Row < numARows && temp_col < numAColumns)
             subTileM[ty][tx] = k[m * C * K * K + temp_col];
         else
             subTileM[ty][tx] = 0;
 
-        // int X_b = b;
         int X_c = temp_row / (K * K);
         int X_p = temp_row % (K * K) / K;
         int X_q = (temp_row % (K * K)) % K;
@@ -326,7 +323,7 @@ __global__ void forward_kernel2(float *  y, const float *  x, const float *  k, 
             subTileN[ty][tx] = 0;
         __syncthreads();
         // #pragma unroll
-        for (int k = 0; k < TILE_WIDTH2; k++)
+        for (int k = 0; k < TILE_WIDTH; k++)
             Pvalue += subTileM[ty][k] * subTileN[k][tx];
         __syncthreads();
     }
@@ -337,8 +334,8 @@ __global__ void forward_kernel2(float *  y, const float *  x, const float *  k, 
 #undef y4d
 #undef x4d
 }
-
 #endif // #ifdef UNROLL_IMPLICIT
+
 
 #ifdef UNROLL_IMPLICIT_CONSTANT
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K) {
@@ -598,25 +595,23 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
 
 #ifdef UNROLL_IMPLICIT
-if(M==24){
-    #undef TILE_WIDTH2
-    #define TILE_WIDTH2 TILE_WIDTH_MATRIX2
-    // Set the kernel dimensions
-    dim3 gridDim_1(ceil(H_out*W_out/float(TILE_WIDTH2)), ceil(M/float(TILE_WIDTH2)), B);
-    dim3 blockDim_1(TILE_WIDTH2, TILE_WIDTH2, 1);
+    if(M == 24){
+        int tile_width = TILE_WIDTH_MATRIX2;
+        // Set the kernel dimensions
+        dim3 gridDim_1(ceil(H_out*W_out/float(tile_width)), ceil(M/float(tile_width)), B);
+        dim3 blockDim_1(tile_width, tile_width, 1);
 
-    // Call the kernel
-    forward_kernel2<<<gridDim_1, blockDim_1, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B, M, C, H, W, K);
-}
-else{
-#undef TILE_WIDTH
-#define TILE_WIDTH TILE_WIDTH_MATRIX
-    // Set the kernel dimensions
-    dim3 gridDim_1(ceil(H_out*W_out/float(TILE_WIDTH)), ceil(M/float(TILE_WIDTH)), B);
-    dim3 blockDim_1(TILE_WIDTH, TILE_WIDTH, 1);
-    // Call the kernel
-    forward_kernel<<<gridDim_1, blockDim_1, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B, M, C, H, W, K);
-}
+        // Call the kernel
+        forward_kernel2<<<gridDim_1, blockDim_1, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B, M, C, H, W, K);
+    }
+    else{
+        int tile_width = TILE_WIDTH_MATRIX;
+        // Set the kernel dimensions
+        dim3 gridDim_1(ceil(H_out*W_out/float(tile_width)), ceil(M/float(tile_width)), B);
+        dim3 blockDim_1(tile_width, tile_width, 1);
+        // Call the kernel
+        forward_kernel<<<gridDim_1, blockDim_1, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B, M, C, H, W, K);
+    }
 #endif /* #ifdef UNROLL_IMPLICIT  */
 
 
