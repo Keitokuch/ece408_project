@@ -185,7 +185,7 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
     h = (blockIdx.z / W_grid) * TILE_WIDTH + threadIdx.y;
     w = (blockIdx.z % W_grid) * TILE_WIDTH + threadIdx.x;
 
-    #pragma once
+    #pragma unroll
     for (c = 0; c < C; ++c) {
         if (h < H && w < W) {
             X_ds[c][threadIdx.y][threadIdx.x] = x4d(n, c, h, w);
@@ -198,11 +198,11 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
 
     if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH && h < H_out && w < W_out) {
         float acc = 0;
-        #pragma once
+        #pragma unroll
         for (c = 0; c < C; c++)
-            #pragma once
+            #pragma unroll
             for (p = 0; p < K; ++p)
-                #pragma once
+                #pragma unroll
                 for (q = 0; q < K; ++q)
                     acc += X_ds[c][threadIdx.y + p][threadIdx.x + q] * k4d(m, c, p, q);
         y4d(n, m, h, w) = acc;
