@@ -6,7 +6,7 @@
 using namespace nvcuda;
 
 #define TILE_WIDTH 16
-#define TILE_WIDTH_MATRIX 20
+#define TILE_WIDTH_MATRIX 16
 #define H_out (H - K + 1)
 #define W_out (W - K + 1)
 #define HALO_WIDTH (TILE_WIDTH + 4)
@@ -213,8 +213,8 @@ __global__ void forward_kernel(const float *k_unroll, const float *x_unroll, flo
 
 
 #ifdef UNROLL_IMPLICIT
-// __global__ void forward_kernel(float *  y, const float *  x, const float *  k, const int B, const int M, const int C, const int H, const int W, const int K) {
-__global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K) {
+__global__ void forward_kernel(float *  y, const float *  x, const float *  k, const int B, const int M, const int C, const int H, const int W, const int K) {
+// __global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K) {
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
@@ -243,7 +243,7 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
     int w = Col % W_out;
 
     float Pvalue = 0;
-    #pragma unroll
+    // #pragma unroll
     for (int i = 0; i < ceil(numAColumns/float(TILE_WIDTH)); i++) {
         int temp_col = i * TILE_WIDTH + tx, temp_row = i * TILE_WIDTH + ty;
         if (Row < numARows && temp_col < numAColumns)
@@ -262,7 +262,7 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
         else
             subTileN[ty][tx] = 0;
         __syncthreads();
-        #pragma unroll
+        // #pragma unroll
         for (int k = 0; k < TILE_WIDTH; k++)
             Pvalue += subTileM[ty][k] * subTileN[k][tx];
         __syncthreads();
