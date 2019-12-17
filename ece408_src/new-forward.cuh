@@ -1,4 +1,3 @@
-
 #ifndef MXNET_OPERATOR_NEW_FORWARD_CUH_
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 
@@ -7,8 +6,9 @@
 #define TILE_WIDTH 16
 #define H_out (H - K + 1)
 #define W_out (W - K + 1)
+#define HALO_WIDTH (TILE_WIDTH + 4)
 
-// #define ORIGINAL
+/* #define ORIGINAL */
 // #define UNROLL
 #define CONSTANT
 #define SHARED
@@ -30,12 +30,17 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     The goal here is to be correct AND fast.
     We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
     */
-    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
-    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
-
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
+#ifdef CONSTANT
+#define k4d(i3, i2, i1, i0) deviceKernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+#else
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
+#endif
+
+
+    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
+    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
 
     int b = blockIdx.x;
     int m = blockIdx.y;
@@ -127,46 +132,13 @@ __global__ void forward_kernel(const float * __restrict__ k_unroll, const float 
 #endif // #ifdef UNROLL
 
 
-#ifdef CONSTANT
-__global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const int B, const int M, const int C, const int H, const int W, const int K)
-{
-
-    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
-    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
-
-#define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
-#define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
-#define k4d(i3, i2, i1, i0) deviceKernel[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
-
-    int n, m, h, w, c, p, q;
-    n = blockIdx.x;
-    m = blockIdx.y;
-    h = (blockIdx.z / W_grid) * TILE_WIDTH + threadIdx.y;
-    w = (blockIdx.z % W_grid) * TILE_WIDTH + threadIdx.x;
-    if (h < H_out && w < W_out) {
-        float acc = 0;
-        #pragma unroll
-        for (c = 0; c < C; c++)
-            #pragma unroll
-            for (p = 0; p < K; ++p)
-                #pragma unroll
-                for (q = 0; q < K; ++q)
-                    acc += x4d(n, c, h + p, w + q) * k4d(m, c, p, q);
-        y4d(n, m, h, w) = acc;
-    }
-
-#undef y4d
-#undef x4d
-#undef k4d
-}
-#endif /* #ifdef CONSTANT */
-
 
 #ifdef SHARED
 __global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
-    __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
+    /* __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1]; */
+    __shared__ float X_ds[12 * HALO_WIDTH * HALO_WIDTH];
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
     int W_grid = ceil(1.0*W_out / TILE_WIDTH);
 
@@ -188,9 +160,11 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
     #pragma unroll
     for (c = 0; c < C; ++c) {
         if (h < H && w < W) {
-            X_ds[c][threadIdx.y][threadIdx.x] = x4d(n, c, h, w);
+            /* X_ds[c][threadIdx.y][threadIdx.x] = x4d(n, c, h, w); */
+            X_ds[c * HALO_WIDTH * HALO_WIDTH + threadIdx.y * HALO_WIDTH + threadIdx.x] = x4d(n, c, h, w);
         } else {
-            X_ds[c][threadIdx.y][threadIdx.x] = 0.0f;
+            /* X_ds[c][threadIdx.y][threadIdx.x] = 0.0f; */
+            X_ds[c * HALO_WIDTH * HALO_WIDTH + threadIdx.y * HALO_WIDTH + threadIdx.x] = 0.0f;
         }
     }
 
@@ -204,7 +178,8 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
             for (p = 0; p < K; ++p)
                 #pragma unroll
                 for (q = 0; q < K; ++q)
-                    acc += X_ds[c][threadIdx.y + p][threadIdx.x + q] * k4d(m, c, p, q);
+                    /* acc += X_ds[c][threadIdx.y + p][threadIdx.x + q] * k4d(m, c, p, q); */
+                    acc += X_ds[c*HALO_WIDTH*HALO_WIDTH + (threadIdx.y+p)*HALO_WIDTH + (threadIdx.x+q)] * k4d(m, c, p, q);
         y4d(n, m, h, w) = acc;
     }
 
@@ -238,12 +213,6 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     /* printf("B = %d, M = %d, C = %d, H = %d, W = %d, K = %d\n", B, M, C, H, W, K); */
     cudaStream_t s = 0;
 
-    /* ------------------------- Original ------------------------ */
-    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
-    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
-    int Z = H_grid * W_grid;
-    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
-    dim3 gridDim(B, M, Z);
 
 #ifdef CONSTANT
     cudaMemcpyToSymbol(deviceKernel, w.dptr_, M * C * K * K * sizeof(float));
@@ -252,6 +221,12 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     /* --------------------------- RUN KERNEL ------------------------------ */
 
 #ifdef ORIGINAL
+    /* ------------------------- Original ------------------------ */
+    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
+    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
+    int Z = H_grid * W_grid;
+    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
+    dim3 gridDim(B, M, Z);
     forward_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_,x.dptr_,w.dptr_, B,M,C,H,W,K);
 #endif /* #ifdef ORIGINAL */
 
@@ -273,15 +248,14 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 #endif /* #ifdef UNROLL  */
 
 #ifdef SHARED
+    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
+    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
+    int Z = H_grid * W_grid;
     /* ----------------------- SHARED --------------------- */
     int blockWidth = TILE_WIDTH + K - 1;
     dim3 blockDim_s(blockWidth, blockWidth, 1);
     dim3 gridDim_s(B, M, Z);
     forward_kernel<<<gridDim_s, blockDim_s, 0, s>>>(y.dptr_, x.dptr_, w.dptr_, B,M,C,H,W,K);
-#else 
-#ifdef CONSTANT
-    forward_kernel<<<gridDim, blockDim, 0, s>>>(y.dptr_, x.dptr_, B,M,C,H,W,K);
-#endif /* #ifdef CONSTANT */
 #endif /* #ifdef SHARED */
 
 
