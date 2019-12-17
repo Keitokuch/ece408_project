@@ -5,9 +5,9 @@
 #include <mma.h>
 using namespace nvcuda;
 
-#define TILE_WIDTH 12
+#define TILE_WIDTH 16
 #define TILE_WIDTH2 24
-#define TILE_WIDTH_MATRIX 12
+#define TILE_WIDTH_MATRIX 16 //16 is faster
 #define TILE_WIDTH_MATRIX2 24
 #define H_out (H - K + 1)
 #define W_out (W - K + 1)
