@@ -14,10 +14,10 @@ using namespace nvcuda;
 
 // #define ORIGINAL
 // #define UNROLL
-// #define UNROLL_EXPLICIT
+#define UNROLL_EXPLICIT
 // #define UNROLL_IMPLICIT
 // #define CONSTANT
-#define SHARED
+// #define SHARED
 // #define WMMA
 
 namespace mxnet
@@ -92,7 +92,7 @@ __global__ void unroll_input(float *x_unroll, const float *x, const int b,
 #undef x_unroll4d
 }
 
-__global__ void matrixMultiplyShared(const float *k_unroll, const float *x_unroll, float *y, const int b,
+__global__ void forward_kernel(const float *k_unroll, const float *x_unroll, float *y, const int b,
     const int B, const int M, const int C, const int H, const int W, const int K) {
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
     __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
@@ -434,7 +434,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // Call the kernel
     for (int b = 0; b < B; b++) {
         unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, b, B, M, C, H, W, K);
-        matrixMultiplyShared<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b, B, M, C, H, W, K);
+        forward_kernel<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b, B, M, C, H, W, K);
     }
 #endif /* #ifdef UNROLL  */
 
