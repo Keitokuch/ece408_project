@@ -17,8 +17,8 @@ using namespace nvcuda;
 // #define UNROLL_EXPLICIT
 // #define UNROLL_IMPLICIT
 // #define CONSTANT
-// #define SHARED
-#define WMMA
+#define SHARED
+// #define WMMA
 
 namespace mxnet
 {
