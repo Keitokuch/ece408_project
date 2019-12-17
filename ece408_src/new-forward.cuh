@@ -11,7 +11,7 @@
 // #define ORIGINAL
 // #define UNROLL
 #define CONSTANT
-// #define SHARED
+#define SHARED
 
 namespace mxnet
 {
@@ -80,7 +80,7 @@ __global__ void unroll_input(float *x_unroll, const float *x, const int b,
 #undef x_unroll4d
 }
 
-__global__ void forward_kernel(const float *k_unroll, const float *x_unroll, float *y, const int b,
+__global__ void forward_kernel(const float * __restrict__ k_unroll, const float * __restrict__ x_unroll, float * __restrict__ y, const int b,
     const int B, const int M, const int C, const int H, const int W, const int K) {
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
     __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
@@ -103,6 +103,7 @@ __global__ void forward_kernel(const float *k_unroll, const float *x_unroll, flo
     int w = Col % W_out;
 
     float Pvalue = 0;
+    #pragma unroll
     for (int i = 0; i < ceil(numAColumns/float(TILE_WIDTH)); i++) {
         if (Row < numARows && (i*TILE_WIDTH+tx) < numAColumns)
             subTileM[ty][tx] = k_unroll[Row*numAColumns+i*TILE_WIDTH+tx];
@@ -113,6 +114,7 @@ __global__ void forward_kernel(const float *k_unroll, const float *x_unroll, flo
         else
             subTileN[ty][tx] = 0;
         __syncthreads();
+        #pragma unroll
         for (int k = 0; k < TILE_WIDTH; k++)
             Pvalue += subTileM[ty][k] * subTileN[k][tx];
         __syncthreads();
@@ -126,7 +128,7 @@ __global__ void forward_kernel(const float *k_unroll, const float *x_unroll, flo
 
 
 #ifdef CONSTANT
-__global__ void forward_kernel(float *y, const float *x, const int B, const int M, const int C, const int H, const int W, const int K)
+__global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
     int H_grid = ceil(1.0*H_out / TILE_WIDTH);
@@ -143,8 +145,11 @@ __global__ void forward_kernel(float *y, const float *x, const int B, const int 
     w = (blockIdx.z % W_grid) * TILE_WIDTH + threadIdx.x;
     if (h < H_out && w < W_out) {
         float acc = 0;
+        #pragma unroll
         for (c = 0; c < C; c++)
+            #pragma unroll
             for (p = 0; p < K; ++p)
+                #pragma unroll
                 for (q = 0; q < K; ++q)
                     acc += x4d(n, c, h + p, w + q) * k4d(m, c, p, q);
         y4d(n, m, h, w) = acc;
@@ -158,7 +163,7 @@ __global__ void forward_kernel(float *y, const float *x, const int B, const int 
 
 
 #ifdef SHARED
-__global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K)
+__global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
     __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
@@ -180,6 +185,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     h = (blockIdx.z / W_grid) * TILE_WIDTH + threadIdx.y;
     w = (blockIdx.z % W_grid) * TILE_WIDTH + threadIdx.x;
 
+    #pragma once
     for (c = 0; c < C; ++c) {
         if (h < H && w < W) {
             X_ds[c][threadIdx.y][threadIdx.x] = x4d(n, c, h, w);
@@ -192,8 +198,11 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
     if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH && h < H_out && w < W_out) {
         float acc = 0;
+        #pragma once
         for (c = 0; c < C; c++)
+            #pragma once
             for (p = 0; p < K; ++p)
+                #pragma once
                 for (q = 0; q < K; ++q)
                     acc += X_ds[c][threadIdx.y + p][threadIdx.x + q] * k4d(m, c, p, q);
         y4d(n, m, h, w) = acc;
