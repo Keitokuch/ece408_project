@@ -10,7 +10,7 @@ using namespace nvcuda;
 #define W_out (W - K + 1)
 #define HALO_WIDTH (TILE_WIDTH + 4)
 #define CUDA_MAX_NUM_THREADS 1024
-#define BATCH_SIZE 100
+#define BATCH_SIZE 1000
 
 // #define ORIGINAL
 // #define UNROLL
@@ -447,13 +447,11 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 blockDim_1(CUDA_MAX_NUM_THREADS, 1, 1);
     dim3 gridDim_2(ceil(H_out*W_out/float(TILE_WIDTH)), ceil(M/float(TILE_WIDTH)), BATCH_SIZE);
     dim3 blockDim_2(TILE_WIDTH, TILE_WIDTH, 1);
-
-    unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, 0, B, M, C, H, W, K);
-    forward_kernel<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, 0, B, M, C, H, W, K);
-    // for (int b_index = 0; b_index < B / BATCH_SIZE; b_index++) {
-    //     unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, b_index, B, M, C, H, W, K);
-    //     forward_kernel<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b_index, B, M, C, H, W, K);
-    // }
+    
+    for (int b_index = 0; b_index < B / BATCH_SIZE; b_index++) {
+        unroll_input<<<gridDim_1, blockDim_1>>>(x_unroll, x.dptr_, b_index, B, M, C, H, W, K);
+        forward_kernel<<<gridDim_2, blockDim_2>>>(w.dptr_, x_unroll, y.dptr_, b_index, B, M, C, H, W, K);
+    }
 #endif /* #ifdef UNROLL_EXPLICIT  */
 
 
