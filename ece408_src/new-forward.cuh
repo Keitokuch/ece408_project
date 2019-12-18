@@ -410,11 +410,6 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 __global__ void forward_kernel(float * __restrict__ y, const float * __restrict__ x, const float * __restrict__ k, const int B, const int M, const int C, const int H, const int W, const int K)
 {
 
-    // __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
-    __shared__ float X_ds[12 * HALO_WIDTH * HALO_WIDTH];
-    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
-    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
-
 
 #define y4d(i3, i2, i1, i0) y[(i3) * (M * H_out * W_out) + (i2) * (H_out * W_out) + (i1) * (W_out) + i0]
 #define x4d(i3, i2, i1, i0) x[(i3) * (C * H * W) + (i2) * (H * W) + (i1) * (W) + i0]
@@ -423,6 +418,11 @@ __global__ void forward_kernel(float * __restrict__ y, const float * __restrict_
 #else
 #define k4d(i3, i2, i1, i0) k[(i3) * (C * K * K) + (i2) * (K * K) + (i1) * (K) + i0]
 #endif
+
+    // __shared__ float X_ds[12][TILE_WIDTH + 5 - 1][TILE_WIDTH + 5 - 1];
+    __shared__ float X_ds[12 * HALO_WIDTH * HALO_WIDTH];
+    int H_grid = ceil(1.0*H_out / TILE_WIDTH);
+    int W_grid = ceil(1.0*W_out / TILE_WIDTH);
 
     int n, m, h, w, c, p, q;
     n = blockIdx.x;
